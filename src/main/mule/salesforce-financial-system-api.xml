@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+  xmlns:salesforce="http://www.mulesoft.org/schema/mule/salesforce"
+  xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+  xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+  http://www.mulesoft.org/schema/mule/salesforce http://www.mulesoft.org/schema/mule/salesforce/current/mule-salesforce.xsd
+  http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+">
+
+  <!-- GET /accounts - Business Logic Flow -->
+  <flow name="get-accounts-business-logic" doc:name="get-accounts-business-logic">
+    <ee:transform doc:name="Build SOQL Query">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var sfId = payload.sfId default null
+var customerSfId = payload.customerSfId default null
+---
+{
+  query: "SELECT Id, AccountNumber, Type, Name, Balance__c, Status__c FROM FinServ__FinancialAccount__c " ++
+         (if (sfId != null) "WHERE Id = '" ++ sfId ++ "' " 
+          else if (customerSfId != null) "WHERE FinServ__PrimaryOwner__c = '" ++ customerSfId ++ "' " 
+          else "") ++
+         "LIMIT 200"
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+
+    <try doc:name="Try">
+      <salesforce:query config-ref="Salesforce_Config" doc:name="Query Financial Accounts">
+        <salesforce:salesforce-query><![CDATA[#[payload.query]]]></salesforce:salesforce-query>
+      </salesforce:query>
+
+      <ee:transform doc:name="Transform to Account Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var records = payload.records default []
+---
+records map ((account) -> {
+  id: null,
+  globalId: null,
+  externalIds: [{
+    system: "Salesforce",
+    value: account.Id
+  }],
+  accountNumber: account.AccountNumber,
+  accountType: account.Type default "Other",
+  accountName: account.Name default null,
+  balance: account.Balance__c default 0.00,
+  status: account.Status__c default "Active"
+})]]></ee:set-payload>
+        </ee:message>
+      </ee:transform>
+
+      <http:response statusCode="200" doc:name="HTTP Response"/>
+      
+      <error-handler>
+        <on-error-propagate type="SALESFORCE:*" enableNotifications="true" logException="true" doc:name="Salesforce Error">
+          <ee:transform doc:name="Transform Error">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  error: {
+    code: "SALESFORCE_ERROR",
+    message: "An error occurred while querying Salesforce",
+    timestamp: now()
+  }
+}]]></ee:set-payload>
+            </ee:message>
+          </ee:transform>
+          <http:response statusCode="500" doc:name="HTTP Response"/>
+        </on-error-propagate>
+      </error-handler>
+    </try>
+  </flow>
+
+  <!-- POST /accounts - Business Logic Flow -->
+  <flow name="upsert-account-business-logic" doc:name="upsert-account-business-logic">
+    <ee:transform doc:name="Transform to Salesforce Format">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var sfId = payload.externalIds filter ($.system == "Salesforce")[0].value default null
+---
+{
+  sfId: sfId,
+  account: {
+    AccountNumber: payload.accountNumber,
+    Type: payload.accountType,
+    Name: payload.accountName default null,
+    Balance__c: payload.balance default 0.00,
+    Status__c: payload.status default "Active"
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+
+    <try doc:name="Try">
+      <choice doc:name="Upsert Strategy">
+        <when expression="#[vars.payload.sfId != null]">
+          <salesforce:update config-ref="Salesforce_Config" doc:name="Update Financial Account">
+            <salesforce:salesforce-objects>
+              <salesforce:update-object>
+                <salesforce:id><![CDATA[#[vars.payload.sfId]]]></salesforce:id>
+                <salesforce:type>FinServ__FinancialAccount__c</salesforce:type>
+                <salesforce:fields><![CDATA[#[vars.payload.account]]]></salesforce:fields>
+              </salesforce:update-object>
+            </salesforce:salesforce-objects>
+          </salesforce:update>
+        </when>
+        <otherwise>
+          <salesforce:create config-ref="Salesforce_Config" doc:name="Create Financial Account">
+            <salesforce:salesforce-objects>
+              <salesforce:create-object>
+                <salesforce:type>FinServ__FinancialAccount__c</salesforce:type>
+                <salesforce:fields><![CDATA[#[vars.payload.account]]]></salesforce:fields>
+              </salesforce:create-object>
+            </salesforce:salesforce-objects>
+          </salesforce:create>
+        </otherwise>
+      </choice>
+
+      <ee:transform doc:name="Transform Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var result = payload[0]
+---
+{
+  id: null,
+  globalId: null,
+  externalIds: [{
+    system: "Salesforce",
+    value: result.id
+  }],
+  accountNumber: vars.payload.account.AccountNumber,
+  accountType: vars.payload.account.Type,
+  accountName: vars.payload.account.Name,
+  balance: vars.payload.account.Balance__c,
+  status: vars.payload.account.Status__c
+}]]></ee:set-payload>
+        </ee:message>
+      </ee:transform>
+
+      <http:response statusCode="#[vars.payload.sfId == null ? 201 : 200]" doc:name="HTTP Response"/>
+      
+      <error-handler>
+        <on-error-propagate type="SALESFORCE:*" enableNotifications="true" logException="true" doc:name="Salesforce Error">
+          <ee:transform doc:name="Transform Error">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  error: {
+    code: "SALESFORCE_ERROR",
+    message: "An error occurred while upserting financial account in Salesforce",
+    timestamp: now()
+  }
+}]]></ee:set-payload>
+            </ee:message>
+          </ee:transform>
+          <http:response statusCode="500" doc:name="HTTP Response"/>
+        </on-error-propagate>
+      </error-handler>
+    </try>
+  </flow>
+
+  <!-- POST /transactions - Upsert Transaction dans Salesforce -->
+  <flow name="upsert-transaction-business-logic" doc:name="upsert-transaction-business-logic">
+    <ee:transform doc:name="Transform to Salesforce Format">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var sfId = payload.externalIds filter ($.system == "Salesforce")[0].value default null
+var accountSfId = payload.externalIds filter ($.system == "Salesforce") map ($.value) default []
+---
+{
+  sfId: sfId,
+  transaction: {
+    FinServ__FinancialAccount__c: accountSfId[0] default null,
+    Name: payload.transactionNumber,
+    Amount__c: payload.amount,
+    Transaction_Date__c: payload.transactionDate,
+    Type__c: payload.transactionType,
+    Status__c: payload.status default "Posted"
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+
+    <try doc:name="Try">
+      <choice doc:name="Upsert Strategy">
+        <when expression="#[vars.payload.sfId != null]">
+          <salesforce:update config-ref="Salesforce_Config" doc:name="Update Transaction">
+            <salesforce:salesforce-objects>
+              <salesforce:update-object>
+                <salesforce:id><![CDATA[#[vars.payload.sfId]]]></salesforce:id>
+                <salesforce:type>FinServ__FinancialAccountTransaction__c</salesforce:type>
+                <salesforce:fields><![CDATA[#[vars.payload.transaction]]]></salesforce:fields>
+              </salesforce:update-object>
+            </salesforce:salesforce-objects>
+          </salesforce:update>
+        </when>
+        <otherwise>
+          <salesforce:create config-ref="Salesforce_Config" doc:name="Create Transaction">
+            <salesforce:salesforce-objects>
+              <salesforce:create-object>
+                <salesforce:type>FinServ__FinancialAccountTransaction__c</salesforce:type>
+                <salesforce:fields><![CDATA[#[vars.payload.transaction]]]></salesforce:fields>
+              </salesforce:create-object>
+            </salesforce:salesforce-objects>
+          </salesforce:create>
+        </otherwise>
+      </choice>
+
+      <ee:transform doc:name="Transform Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var result = payload[0]
+---
+{
+  id: null,
+  globalId: null,
+  externalIds: [{
+    system: "Salesforce",
+    value: result.id
+  }],
+  transactionNumber: vars.payload.transaction.Name,
+  amount: vars.payload.transaction.Amount__c,
+  transactionDate: vars.payload.transaction.Transaction_Date__c,
+  transactionType: vars.payload.transaction.Type__c,
+  status: vars.payload.transaction.Status__c
+}]]></ee:set-payload>
+        </ee:message>
+      </ee:transform>
+
+      <http:response statusCode="#[vars.payload.sfId == null ? 201 : 200]" doc:name="HTTP Response"/>
+      
+      <error-handler>
+        <on-error-propagate type="SALESFORCE:*" enableNotifications="true" logException="true" doc:name="Salesforce Error">
+          <ee:transform doc:name="Transform Error">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  error: {
+    code: "SALESFORCE_ERROR",
+    message: "An error occurred while upserting transaction in Salesforce",
+    timestamp: now()
+  }
+}]]></ee:set-payload>
+            </ee:message>
+          </ee:transform>
+          <http:response statusCode="500" doc:name="HTTP Response"/>
+        </on-error-propagate>
+      </error-handler>
+    </try>
+  </flow>
+
+  <!-- POST /cards - Business Logic Flow -->
+  <flow name="upsert-card-business-logic" doc:name="upsert-card-business-logic">
+    
+    <ee:transform doc:name="Transform to Salesforce Format">
+      <ee:message>
+        <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+var sfId = payload.externalIds filter ($.system == "Salesforce")[0].value default null
+---
+{
+  sfId: sfId,
+  card: {
+    Card_Number__c: payload.cardNumber,
+    Card_Type__c: payload.cardType,
+    Status__c: payload.status default "Active",
+    Credit_Limit__c: payload.creditLimit default null
+  }
+}]]></ee:set-payload>
+      </ee:message>
+    </ee:transform>
+
+    <try doc:name="Try">
+      <choice doc:name="Upsert Strategy">
+        <when expression="#[vars.payload.sfId != null]">
+          <salesforce:update config-ref="Salesforce_Config" doc:name="Update Card">
+            <salesforce:salesforce-objects>
+              <salesforce:update-object>
+                <salesforce:id><![CDATA[#[vars.payload.sfId]]]></salesforce:id>
+                <salesforce:type>FinServ__Card__c</salesforce:type>
+                <salesforce:fields><![CDATA[#[vars.payload.card]]]></salesforce:fields>
+              </salesforce:update-object>
+            </salesforce:salesforce-objects>
+          </salesforce:update>
+        </when>
+        <otherwise>
+          <salesforce:create config-ref="Salesforce_Config" doc:name="Create Card">
+            <salesforce:salesforce-objects>
+              <salesforce:create-object>
+                <salesforce:type>FinServ__Card__c</salesforce:type>
+                <salesforce:fields><![CDATA[#[vars.payload.card]]]></salesforce:fields>
+              </salesforce:create-object>
+            </salesforce:salesforce-objects>
+          </salesforce:create>
+        </otherwise>
+      </choice>
+
+      <ee:transform doc:name="Transform Response">
+        <ee:message>
+          <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var result = payload[0]
+---
+{
+  id: null,
+  globalId: null,
+  externalIds: [{
+    system: "Salesforce",
+    value: result.id
+  }],
+  cardNumber: vars.payload.card.Card_Number__c,
+  cardType: vars.payload.card.Card_Type__c,
+  status: vars.payload.card.Status__c,
+  creditLimit: vars.payload.card.Credit_Limit__c
+}]]></ee:set-payload>
+        </ee:message>
+      </ee:transform>
+
+      <http:response statusCode="#[vars.payload.sfId == null ? 201 : 200]" doc:name="HTTP Response"/>
+      
+      <error-handler>
+        <on-error-propagate type="SALESFORCE:*" enableNotifications="true" logException="true" doc:name="Salesforce Error">
+          <ee:transform doc:name="Transform Error">
+            <ee:message>
+              <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+  error: {
+    code: "SALESFORCE_ERROR",
+    message: "An error occurred while upserting card in Salesforce",
+    timestamp: now()
+  }
+}]]></ee:set-payload>
+            </ee:message>
+          </ee:transform>
+          <http:response statusCode="500" doc:name="HTTP Response"/>
+        </on-error-propagate>
+      </error-handler>
+    </try>
+  </flow>
+
+</mule>

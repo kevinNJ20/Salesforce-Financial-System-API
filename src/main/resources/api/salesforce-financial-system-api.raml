@@ -1,0 +1,143 @@
+#%RAML 1.0
+title: Salesforce Financial System API
+version: 1.0.0
+baseUri: http://localhost:8081/api/salesforce/financial
+mediaType: application/json
+
+documentation:
+  - title: Overview
+    content: API système pour gérer les données financières dans Salesforce Financial Services Cloud
+
+types:
+  FinancialAccount:
+    type: object
+    properties:
+      id?: string
+      globalId?: string
+      externalIds:
+        type: array
+        items:
+          type: object
+          properties:
+            system: string
+            value: string
+      accountNumber: string
+      accountType: string
+      accountName?: string
+      balance?: number
+      status?: string
+  FinancialTransaction:
+    type: object
+    properties:
+      id?: string
+      globalId?: string
+      externalIds:
+        type: array
+        items:
+          type: object
+          properties:
+            system: string
+            value: string
+      transactionNumber: string
+      amount: number
+      transactionDate: datetime
+      transactionType: string
+      status?: string
+  FinancialCard:
+    type: object
+    properties:
+      id?: string
+      globalId?: string
+      externalIds:
+        type: array
+        items:
+          type: object
+          properties:
+            system: string
+            value: string
+      cardNumber: string
+      cardType: string
+      status?: string
+      creditLimit?: number
+  ErrorResponse:
+    type: object
+    properties:
+      error:
+        type: object
+        properties:
+          code: string
+          message: string
+
+/accounts:
+  displayName: Financial Accounts
+  description: Opérations sur les comptes financiers Salesforce
+  
+  get:
+    displayName: Get Accounts
+    queryParameters:
+      sfId:
+        type: string
+        required: false
+      customerSfId:
+        type: string
+        required: false
+    responses:
+      200:
+        body:
+          application/json:
+            type: FinancialAccount[]
+      400:
+        body:
+          application/json:
+            type: ErrorResponse
+
+  post:
+    displayName: Upsert Account
+    body:
+      application/json:
+        type: FinancialAccount
+    responses:
+      200:
+        body:
+          application/json:
+            type: FinancialAccount
+      201:
+        body:
+          application/json:
+            type: FinancialAccount
+
+/transactions:
+  displayName: Transactions
+  description: Opérations sur les transactions financières Salesforce
+  post:
+    displayName: Upsert Transaction
+    body:
+      application/json:
+        type: FinancialTransaction
+    responses:
+      200:
+        body:
+          application/json:
+            type: FinancialTransaction
+      201:
+        body:
+          application/json:
+            type: FinancialTransaction
+
+/cards:
+  displayName: Cards
+  description: Opérations sur les cartes financières Salesforce
+  post:
+    displayName: Upsert Card
+    body:
+      application/json:
+        type: FinancialCard
+    responses:
+      200:
+        body:
+          application/json:
+            type: FinancialCard
+      201:
+        body:
+          application/json:
+            type: FinancialCard
